@@ -55,6 +55,9 @@ type ControllerEngine struct {
 	// the above TrackingInformers.
 	client client.Client
 
+	// directClient is a client that can be used to interact with the API server directly, without cache
+	directClient client.Client
+
 	log logging.Logger
 
 	// Protects everything below.
@@ -71,13 +74,14 @@ type TrackingInformers interface {
 }
 
 // New creates a new controller engine.
-func New(mgr manager.Manager, infs TrackingInformers, c client.Client, o ...ControllerEngineOption) *ControllerEngine {
+func New(mgr manager.Manager, infs TrackingInformers, c client.Client, dc client.Client, o ...ControllerEngineOption) *ControllerEngine {
 	e := &ControllerEngine{
-		mgr:         mgr,
-		infs:        infs,
-		client:      c,
-		log:         logging.NewNopLogger(),
-		controllers: make(map[string]*controller),
+		mgr:          mgr,
+		infs:         infs,
+		client:       c,
+		directClient: dc,
+		log:          logging.NewNopLogger(),
+		controllers:  make(map[string]*controller),
 	}
 
 	for _, fn := range o {
@@ -155,6 +159,11 @@ func WithNewControllerFn(fn NewControllerFn) ControllerOption {
 // GetClient gets a client backed by the controller engine's cache.
 func (e *ControllerEngine) GetClient() client.Client {
 	return e.client
+}
+
+// GetDirectClient gets a client that interacts with the API server directly, without cache
+func (e *ControllerEngine) GetDirectClient() client.Client {
+	return e.directClient
 }
 
 // GetFieldIndexer returns a FieldIndexer that can be used to add indexes to the

@@ -19,6 +19,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -43,7 +44,6 @@ import (
 	"github.com/crossplane/crossplane-runtime/pkg/resource/unstructured"
 	"github.com/crossplane/crossplane-runtime/pkg/resource/unstructured/composed"
 	"github.com/crossplane/crossplane-runtime/pkg/resource/unstructured/composite"
-
 	fnv1 "github.com/crossplane/crossplane/apis/apiextensions/fn/proto/v1"
 	v1 "github.com/crossplane/crossplane/apis/apiextensions/v1"
 	"github.com/crossplane/crossplane/internal/names"
@@ -101,9 +101,10 @@ const (
 // A FunctionComposer supports composing resources using a pipeline of
 // Composition Functions. It ignores the P&T resources array.
 type FunctionComposer struct {
-	client    client.Client
-	composite xr
-	pipeline  FunctionRunner
+	client       client.Client
+	directClient client.Client
+	composite    xr
+	pipeline     FunctionRunner
 }
 
 type xr struct {
@@ -217,11 +218,12 @@ func WithManagedFieldsUpgrader(u ManagedFieldsUpgrader) FunctionComposerOption {
 
 // NewFunctionComposer returns a new Composer that supports composing resources using
 // both Patch and Transform (P&T) logic and a pipeline of Composition Functions.
-func NewFunctionComposer(kube client.Client, r FunctionRunner, o ...FunctionComposerOption) *FunctionComposer {
+func NewFunctionComposer(kube client.Client, kubeDirect client.Client, r FunctionRunner, o ...FunctionComposerOption) *FunctionComposer {
 	f := NewSecretConnectionDetailsFetcher(kube)
 
 	c := &FunctionComposer{
-		client: kube,
+		client:       kube,
+		directClient: kubeDirect,
 
 		composite: xr{
 			ConnectionDetailsFetcher:         f,
@@ -488,6 +490,41 @@ func (c *FunctionComposer) Compose(ctx context.Context, xr *composite.Unstructur
 	// below. This ensures that issues observing and processing one composed
 	// resource won't block the application of another.
 	for name, cd := range desired {
+
+		// Attempt to fetch the current state from the API server.
+		current := cd.Resource.DeepCopyObject().(client.Object)
+		err := c.directClient.Get(ctx, client.ObjectKeyFromObject(cd.Resource), current)
+		if err != nil && !kerrors.IsNotFound(err) {
+			return CompositionResult{}, errors.Wrapf(err, "failed to get current state for resource %q", name)
+		}
+
+		if err == nil {
+			// Remove dynamic fields that we want to ignore in our diff.
+			current.SetResourceVersion("")
+			currentMap, err := unstructuredToMap(current)
+			if err != nil {
+				return CompositionResult{}, errors.Wrapf(err, "failed to convert current resource to map for resource %q", name)
+			}
+			delete(currentMap, "status")
+
+			// Create a copy of the desired resource and clear dynamic fields similarly.
+			desiredCopy := cd.Resource.DeepCopyObject().(client.Object)
+			desiredCopy.SetResourceVersion("")
+			desiredMap, err := unstructuredToMap(desiredCopy)
+			if err != nil {
+				return CompositionResult{}, errors.Wrapf(err, "failed to convert desired resource to map for resource %q", name)
+			}
+			delete(desiredMap, "status")
+
+			// Merge desired state (except "status") into the current copy.
+			changed := mergeMap(currentMap, desiredMap)
+			if !changed {
+				// No meaningful differences; skip the patch.
+				resources = append(resources, ComposedResource{ResourceName: name, Ready: cd.Ready, Synced: true})
+				continue
+			}
+		}
+
 		// We don't need any crossplane-runtime resource.Applicator style apply
 		// options here because server-side apply takes care of everything.
 		// Specifically it will merge rather than replace owner references (e.g.
@@ -874,4 +911,46 @@ func convertTarget(t fnv1.Target) CompositionTarget {
 		return CompositionTargetCompositeAndClaim
 	}
 	return CompositionTargetComposite
+}
+
+// unstructuredToMap converts an object to a map[string]interface{} using JSON marshaling.
+func unstructuredToMap(obj interface{}) (map[string]interface{}, error) {
+	data, err := json.Marshal(obj)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// mergeMap recursively merges src into dst.
+// Returns true if any changes were made.
+func mergeMap(dst, src map[string]interface{}) bool {
+	changed := false
+
+	// Merge src keys into dst
+	for k, v := range src {
+		if existing, ok := dst[k]; !ok {
+			dst[k] = v
+			changed = true
+		} else {
+			srcMap, srcOk := v.(map[string]interface{})
+			dstMap, dstOk := existing.(map[string]interface{})
+			if srcOk && dstOk {
+				if mergeMap(dstMap, srcMap) {
+					changed = true
+				}
+			} else {
+				if !reflect.DeepEqual(existing, v) {
+					dst[k] = v
+					changed = true
+				}
+			}
+		}
+	}
+
+	return changed
 }

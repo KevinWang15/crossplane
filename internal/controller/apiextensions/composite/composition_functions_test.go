@@ -869,7 +869,7 @@ func TestFunctionCompose(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			c := NewFunctionComposer(tc.params.kube, tc.params.r, tc.params.o...)
+			c := NewFunctionComposer(tc.params.kube, tc.params.kube, tc.params.r, tc.params.o...)
 			res, err := c.Compose(tc.args.ctx, tc.args.xr, tc.args.req)
 
 			if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {

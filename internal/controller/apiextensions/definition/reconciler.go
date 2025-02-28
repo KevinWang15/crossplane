@@ -102,11 +102,16 @@ type ControllerEngine interface {
 	StartWatches(name string, ws ...engine.Watch) error
 	StopWatches(ctx context.Context, name string, ws ...engine.WatchID) (int, error)
 	GetClient() client.Client
+	GetDirectClient() client.Client
 	GetFieldIndexer() client.FieldIndexer
 }
 
 // A NopEngine does nothing.
 type NopEngine struct{}
+
+func (e *NopEngine) GetDirectClient() client.Client {
+	return nil
+}
 
 // Start does nothing.
 func (e *NopEngine) Start(_ string, _ ...engine.ControllerOption) error { return nil }
@@ -586,7 +591,7 @@ func (r *Reconciler) CompositeReconcilerOptions(ctx context.Context, d *v1.Compo
 	runner := composite.NewFetchingFunctionRunner(r.options.FunctionRunner, composite.NewExistingExtraResourcesFetcher(r.engine.GetClient()))
 
 	// This composer is used for mode: Pipeline Compositions.
-	fc := composite.NewFunctionComposer(r.engine.GetClient(), runner,
+	fc := composite.NewFunctionComposer(r.engine.GetClient(), r.engine.GetDirectClient(), runner,
 		composite.WithComposedResourceObserver(composite.NewExistingComposedResourceObserver(r.engine.GetClient(), fetcher)),
 		composite.WithCompositeConnectionDetailsFetcher(fetcher),
 	)

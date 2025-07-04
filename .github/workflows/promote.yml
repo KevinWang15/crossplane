@@ -69,7 +69,7 @@ jobs:
           --push \
           --secret DOCKER_USER=${{ secrets.UPBOUND_MARKETPLACE_PUSH_ROBOT_USR }} \
           --secret DOCKER_PASSWORD=${{ secrets.UPBOUND_MARKETPLACE_PUSH_ROBOT_PSW }} \
-          +ci-promote-image --CHANNEL=${{ inputs.channel }} --CROSSPLANE_VERSION=${{ inputs.version }} --CROSSPLANE_REPO=xpkg.upbound.io/crossplane/crossplane
+          +ci-promote-image --CHANNEL=${{ inputs.channel }} --CROSSPLANE_VERSION=${{ inputs.version }} --CROSSPLANE_REPO=docker.io/KevinWang15/crossplane
 
       - name: Promote Build Artifacts to https://releases.crossplane.io/${{ inputs.channel }}
         if: env.AWS_USR != ''

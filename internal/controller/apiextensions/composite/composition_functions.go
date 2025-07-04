@@ -20,6 +20,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -104,9 +105,10 @@ const (
 // A FunctionComposer supports composing resources using a pipeline of
 // Composition Functions. It ignores the P&T resources array.
 type FunctionComposer struct {
-	client    client.Client
-	composite xr
-	pipeline  FunctionRunner
+	client       client.Client
+	directClient client.Client
+	composite    xr
+	pipeline     FunctionRunner
 }
 
 type xr struct {
@@ -224,7 +226,8 @@ func NewFunctionComposer(cached, uncached client.Client, r FunctionRunner, o ...
 	f := NewSecretConnectionDetailsFetcher(cached)
 
 	c := &FunctionComposer{
-		client: cached,
+		client:       cached,
+		directClient: uncached,
 
 		composite: xr{
 			ConnectionDetailsFetcher:         f,
@@ -493,6 +496,41 @@ func (c *FunctionComposer) Compose(ctx context.Context, xr *composite.Unstructur
 	// below. This ensures that issues observing and processing one composed
 	// resource won't block the application of another.
 	for name, cd := range desired {
+
+		// Attempt to fetch the current state from the API server.
+		current := cd.Resource.DeepCopyObject().(client.Object)
+		err := c.directClient.Get(ctx, client.ObjectKeyFromObject(cd.Resource), current)
+		if err != nil && !kerrors.IsNotFound(err) {
+			return CompositionResult{}, errors.Wrapf(err, "failed to get current state for resource %q", name)
+		}
+
+		if err == nil {
+			// Remove dynamic fields that we want to ignore in our diff.
+			current.SetResourceVersion("")
+			currentMap, err := unstructuredToMap(current)
+			if err != nil {
+				return CompositionResult{}, errors.Wrapf(err, "failed to convert current resource to map for resource %q", name)
+			}
+			delete(currentMap, "status")
+
+			// Create a copy of the desired resource and clear dynamic fields similarly.
+			desiredCopy := cd.Resource.DeepCopyObject().(client.Object)
+			desiredCopy.SetResourceVersion("")
+			desiredMap, err := unstructuredToMap(desiredCopy)
+			if err != nil {
+				return CompositionResult{}, errors.Wrapf(err, "failed to convert desired resource to map for resource %q", name)
+			}
+			delete(desiredMap, "status")
+
+			// Merge desired state (except "status") into the current copy.
+			changed := mergeMap(currentMap, desiredMap)
+			if !changed {
+				// No meaningful differences; skip the patch.
+				resources = append(resources, ComposedResource{ResourceName: name, Ready: cd.Ready, Synced: true})
+				continue
+			}
+		}
+
 		// We don't need any crossplane-runtime resource.Applicator style apply
 		// options here because server-side apply takes care of everything.
 		// Specifically it will merge rather than replace owner references (e.g.
@@ -917,4 +955,46 @@ func convertTarget(t fnv1.Target) CompositionTarget {
 		return CompositionTargetCompositeAndClaim
 	}
 	return CompositionTargetComposite
+}
+
+// unstructuredToMap converts an object to a map[string]interface{} using JSON marshaling.
+func unstructuredToMap(obj interface{}) (map[string]interface{}, error) {
+	data, err := json.Marshal(obj)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// mergeMap recursively merges src into dst.
+// Returns true if any changes were made.
+func mergeMap(dst, src map[string]interface{}) bool {
+	changed := false
+
+	// Merge src keys into dst
+	for k, v := range src {
+		if existing, ok := dst[k]; !ok {
+			dst[k] = v
+			changed = true
+		} else {
+			srcMap, srcOk := v.(map[string]interface{})
+			dstMap, dstOk := existing.(map[string]interface{})
+			if srcOk && dstOk {
+				if mergeMap(dstMap, srcMap) {
+					changed = true
+				}
+			} else {
+				if !reflect.DeepEqual(existing, v) {
+					dst[k] = v
+					changed = true
+				}
+			}
+		}
+	}
+
+	return changed
 }

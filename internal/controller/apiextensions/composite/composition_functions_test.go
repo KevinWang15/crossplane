@@ -626,8 +626,14 @@ func TestFunctionCompose(t *testing.T) {
 					MockStatusPatch: test.NewMockSubResourcePatchFn(nil),
 				},
 				uc: &test.MockClient{
-					// Return an error when we try to get the secret.
-					MockGet: test.NewMockGetFn(errBoom),
+					// Return an error when we try to get the secret, but allow composed resource gets.
+					MockGet: test.NewMockGetFn(nil, func(obj client.Object) error {
+						if _, ok := obj.(*corev1.Secret); ok {
+							return errBoom
+						}
+						// For composed resources, return NotFound to allow optimization to work
+						return kerrors.NewNotFound(schema.GroupResource{Resource: "UncoolComposed"}, "uncool-resource")
+					}),
 				},
 				r: FunctionRunnerFn(func(_ context.Context, _ string, _ *fnv1.RunFunctionRequest) (rsp *fnv1.RunFunctionResponse, err error) {
 					d := &fnv1.State{
@@ -695,8 +701,14 @@ func TestFunctionCompose(t *testing.T) {
 					MockStatusPatch: test.NewMockSubResourcePatchFn(nil),
 				},
 				uc: &test.MockClient{
-					// Return an error when we try to get the secret.
-					MockGet: test.NewMockGetFn(errBoom),
+					// Return an error when we try to get the secret, but allow composed resource gets.
+					MockGet: test.NewMockGetFn(nil, func(obj client.Object) error {
+						if _, ok := obj.(*corev1.Secret); ok {
+							return errBoom
+						}
+						// For composed resources, return not found (same as cached client)
+						return kerrors.NewNotFound(schema.GroupResource{}, "")
+					}),
 				},
 				r: FunctionRunnerFn(func(_ context.Context, _ string, _ *fnv1.RunFunctionRequest) (*fnv1.RunFunctionResponse, error) {
 					rsp := &fnv1.RunFunctionResponse{
